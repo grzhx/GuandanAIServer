@@ -555,37 +555,104 @@ class GuandanAI:
         
         return total_cost
     
+    def _get_pattern_priority(self, pattern: Pattern, hand: List[Card]) -> int:
+        """
+        Get the priority of a pattern type (lower number = higher priority)
+        Priority: STRAIGHT > TRIPLE_STRAIGHT > PAIR_STRAIGHT > FULLHOUSE > TRIPLE > PAIR/SINGLE
+        For PAIR vs SINGLE: the one with more count in hand has lower priority (prefer to play it)
+        """
+        pattern_type = pattern.pattern_type
+        
+        # Base priorities (lower = prefer to play)
+        priorities = {
+            PatternType.STRAIGHT: 1,
+            PatternType.TRIPLE_STRAIGHT: 2,
+            PatternType.PAIR_STRAIGHT: 3,
+            PatternType.FULLHOUSE: 4,
+            PatternType.TRIPLE: 5,
+            PatternType.PAIR: 6,
+            PatternType.SINGLE: 6,
+        }
+        
+        base_priority = priorities.get(pattern_type, 10)
+        
+        # For PAIR vs SINGLE, dynamically adjust based on count
+        if pattern_type in [PatternType.PAIR, PatternType.SINGLE]:
+            pair_count = self._count_pairs_in_hand(hand)
+            single_count = self._count_singles_in_hand(hand)
+            
+            if pattern_type == PatternType.PAIR:
+                # If more pairs than singles, prefer to play pairs (lower priority number)
+                if pair_count >= single_count:
+                    return 6  # Prefer pairs
+                else:
+                    return 7  # Prefer singles
+            else:  # SINGLE
+                # If more singles than pairs, prefer to play singles
+                if single_count >= pair_count:
+                    return 6  # Prefer singles
+                else:
+                    return 7  # Prefer pairs
+        
+        return base_priority
+    
+    def _count_pairs_in_hand(self, hand: List[Card]) -> int:
+        """Count the number of pairs in hand (cards with exactly 2 of same value)"""
+        value_groups = self._group_by_value(hand)
+        count = 0
+        for value, cards in value_groups.items():
+            if len(cards) >= 2:
+                count += len(cards) // 2
+        return count
+    
+    def _count_singles_in_hand(self, hand: List[Card]) -> int:
+        """Count the number of single cards in hand (cards with only 1 of same value)"""
+        value_groups = self._group_by_value(hand)
+        count = 0
+        for value, cards in value_groups.items():
+            if len(cards) == 1:
+                count += 1
+            elif len(cards) >= 2:
+                count += len(cards) % 2  # Remaining singles after pairing
+        return count
+    
     def _select_smallest_play(self, valid_plays: List[Pattern], hand: List[Card]) -> List[Card]:
         """
-        Select the best play considering both value and cost
+        Select the best play considering cost, pattern priority, and value
         Will pass if the cost of playing is too high
+        
+        Priority order (when cost is same):
+        1. Pattern type: STRAIGHT > TRIPLE_STRAIGHT > PAIR_STRAIGHT > FULLHOUSE > TRIPLE > PAIR/SINGLE
+        2. For PAIR vs SINGLE: prefer the one with more count in hand
+        3. Main value (lower is better)
         """
         if not valid_plays:
             return []
         
-        # Calculate cost for each valid play
-        plays_with_cost = []
+        # Calculate cost and priority for each valid play
+        plays_with_info = []
         for play in valid_plays:
             cost = self._calculate_play_cost(play, hand)
-            plays_with_cost.append((play, cost))
+            priority = self._get_pattern_priority(play, hand)
+            plays_with_info.append((play, cost, priority))
         
-        # Sort by cost first, then by value (for non-bombs) or bomb rank (for bombs)
-        non_bombs = [(p, c) for p, c in plays_with_cost if not is_bomb_type(p)]
-        bombs = [(p, c) for p, c in plays_with_cost if is_bomb_type(p)]
+        # Separate bombs and non-bombs
+        non_bombs = [(p, c, pr) for p, c, pr in plays_with_info if not is_bomb_type(p)]
+        bombs = [(p, c, pr) for p, c, pr in plays_with_info if is_bomb_type(p)]
         
         best_play = None
         best_cost = float('inf')
         
         if non_bombs:
-            # Sort non-bombs by cost, then by main_value
-            non_bombs.sort(key=lambda x: (x[1], x[0].main_value))
-            best_play, best_cost = non_bombs[0]
+            # Sort non-bombs by: cost, then priority, then main_value
+            non_bombs.sort(key=lambda x: (x[1], x[2], x[0].main_value))
+            best_play, best_cost, _ = non_bombs[0]
         
         if bombs:
-            # Sort bombs by cost, then by bomb rank
+            # Sort bombs by: cost, then bomb rank
             bombs.sort(key=lambda x: (x[1], get_bomb_rank(x[0])))
             if not best_play or bombs[0][1] < best_cost:
-                best_play, best_cost = bombs[0]
+                best_play, best_cost, _ = bombs[0]
         
         # If the best play's cost exceeds PASS_COST, choose to pass
         if best_cost > self.PASS_COST:
