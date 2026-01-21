@@ -10,10 +10,9 @@ from fastapi.responses import JSONResponse
 import uvicorn
 
 from game.card import Card, parse_cards, cards_to_dict_list
-from ai.strategy import GuandanAI
+from ai import create_ai, AIConfig
 
 # Configure logging
-
 
 
 logging.basicConfig(level=logging.INFO)
@@ -93,7 +92,7 @@ async def websocket_endpoint(websocket: WebSocket):
                 logger.info(f"Level: {level}, Last move: {len(last_move)} cards, Hand: {len(hand)} cards")
                 
                 # Create AI and find best play
-                ai = GuandanAI(level)
+                ai = create_ai(level)
                 play = ai.find_best_play(hand, last_move)
                 
                 # Prepare response (empty cards list means pass)

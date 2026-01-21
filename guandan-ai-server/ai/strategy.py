@@ -1,35 +1,55 @@
 """
 AI Strategy module for Guandan game
-Implements the algorithm to find the smallest card combination that beats the last play
+方案A：渐进式改进版本 - 在原有基础上添加智能首次出牌和手牌平衡成本
 """
 
-from typing import List, Optional
+from typing import List, Optional, Dict, Any
 from collections import Counter
 from itertools import combinations
 from game.card import Card
 from game.pattern import Pattern, PatternType, identify_pattern
 from game.comparator import can_beat, is_bomb_type, get_bomb_rank
+from ai.base_strategy import BaseStrategy
+from config.ai_config import AIConfig
 
 
-class GuandanAI:
-    """AI player for Guandan game"""
+class ImprovedGuandanAI(BaseStrategy):
+    """方案A：渐进式改进的AI策略"""
     
-    # Pattern protection costs
-    PASS_COST = 125  # Cost of passing
-    COST_KING_BOMB = 10000  # 4 jokers
-    COST_BOMB_6PLUS = 2000  # 6+ same cards
-    COST_BOMB_5 = 1500  # 5 same cards
-    COST_BOMB_4 = 1000  # 4 same cards
-    COST_STRAIGHT_FLUSH = 800  # Straight flush
-    COST_TRIPLE_STRAIGHT = 300  # Triple straight (钢板)
-    COST_PAIR_STRAIGHT = 200  # Pair straight (连对)
-    COST_STRAIGHT = 150  # Regular straight
-    COST_FULLHOUSE = 100  # Three + pair
-    COST_TRIPLE = 50  # Three of a kind
-    COST_PAIR = 10  # Pair
-    
-    def __init__(self, level: int):
+    def __init__(self, level: int = 2):
+        super().__init__()
         self.level = level
+        self.config = AIConfig.IMPROVED_CONFIG
+        
+        # 从配置加载成本
+        self.PASS_COST = self.config["thresholds"]["pass_cost"]
+        pattern_costs = AIConfig.COMMON_CONFIG["pattern_costs"]
+        self.COST_KING_BOMB = pattern_costs["KING_BOMB"]
+        self.COST_BOMB_6PLUS = pattern_costs["BOMB_6PLUS"]
+        self.COST_BOMB_5 = pattern_costs["BOMB_5"]
+        self.COST_BOMB_4 = pattern_costs["BOMB_4"]
+        self.COST_STRAIGHT_FLUSH = pattern_costs["STRAIGHT_FLUSH"]
+        self.COST_TRIPLE_STRAIGHT = pattern_costs["TRIPLE_STRAIGHT"]
+        self.COST_PAIR_STRAIGHT = pattern_costs["PAIR_STRAIGHT"]
+        self.COST_STRAIGHT = pattern_costs["STRAIGHT"]
+        self.COST_FULLHOUSE = pattern_costs["FULLHOUSE"]
+        self.COST_TRIPLE = pattern_costs["TRIPLE"]
+        self.COST_PAIR = pattern_costs["PAIR"]
+    
+    def get_strategy_name(self) -> str:
+        """获取策略名称"""
+        return "改进版AI (方案A)"
+    
+    def get_strategy_description(self) -> str:
+        """获取策略描述"""
+        return "渐进式改进：智能首次出牌 + 手牌平衡成本 + 优化的牌型选择"
+    
+    def decide_play(self, hand: List[Card], last_play: Optional[List[Card]], 
+                   game_state: Dict[str, Any]) -> Optional[List[Card]]:
+        """决定出牌 - 实现BaseStrategy接口"""
+        if not last_play:
+            return self.find_best_play(hand, [])
+        return self.find_best_play(hand, last_play)
     
     def find_best_play(self, hand: List[Card], last_move: List[Card]) -> List[Card]:
         """
@@ -42,9 +62,12 @@ class GuandanAI:
         Returns:
             List of cards to play (empty for PASS)
         """
-        # If no last move, play the smallest single card
+        # If no last move, use smart first move strategy
         if not last_move:
-            return self._play_smallest_single(hand)
+            if self.config["enable_smart_first_move"]:
+                return self._play_smart_first_move(hand)
+            else:
+                return self._play_smallest_single(hand)
         
         # Identify the pattern to beat
         last_pattern = identify_pattern(last_move, self.level)
@@ -659,3 +682,321 @@ class GuandanAI:
             return []  # Pass
         
         return best_play.cards if best_play else []
+    
+    # ==================== 方案A新增功能：智能首次出牌 ====================
+    
+    def _play_smart_first_move(self, hand: List[Card]) -> List[Card]:
+        """
+        智能首次出牌策略 - 优先出完整牌型而不是单牌
+        
+        优先级顺序（从配置读取）：
+        1. 顺子 (STRAIGHT)
+        2. 连对 (PAIR_STRAIGHT)
+        3. 钢板 (TRIPLE_STRAIGHT)
+        4. 三带二 (FULLHOUSE)
+        5. 三张 (TRIPLE)
+        6. 对子 (PAIR) - 当对子数量>=阈值时
+        7. 单牌 (SINGLE) - 最后选择，且优先出孤立的小牌
+        """
+        priority_order = self.config["first_move_priority"]
+        
+        for pattern_type in priority_order:
+            if pattern_type == "straight":
+                result = self._try_play_straight(hand)
+                if result:
+                    return result
+            
+            elif pattern_type == "pair_straight":
+                result = self._try_play_pair_straight(hand)
+                if result:
+                    return result
+            
+            elif pattern_type == "triple_straight":
+                result = self._try_play_triple_straight(hand)
+                if result:
+                    return result
+            
+            elif pattern_type == "fullhouse":
+                result = self._try_play_fullhouse(hand)
+                if result:
+                    return result
+            
+            elif pattern_type == "triple":
+                result = self._try_play_triple(hand)
+                if result:
+                    return result
+            
+            elif pattern_type == "pair":
+                # 只有当对子数量足够多时才优先出对子
+                pair_count = self._count_pairs_in_hand(hand)
+                threshold = self.config["thresholds"]["min_pairs_to_play_pair"]
+                if pair_count >= threshold:
+                    result = self._try_play_pair(hand)
+                    if result:
+                        return result
+            
+            elif pattern_type == "single":
+                # 最后才出单牌，且优先出孤立的小牌
+                return self._play_smallest_isolated_single(hand)
+        
+        # 降级处理：如果所有策略都失败，出最小单牌
+        return self._play_smallest_single(hand)
+    
+    def _try_play_straight(self, hand: List[Card]) -> Optional[List[Card]]:
+        """尝试出顺子（最小的）"""
+        straights = self._find_straights_cards(hand)
+        if straights:
+            # 选择最小的顺子
+            best_straight = min(straights, key=lambda s: self._calculate_cards_total_value(s))
+            return best_straight
+        return None
+    
+    def _try_play_pair_straight(self, hand: List[Card]) -> Optional[List[Card]]:
+        """尝试出连对（最小的）"""
+        pair_straights = self._find_pair_straights_cards(hand)
+        if pair_straights:
+            # 选择最小的连对
+            best_ps = min(pair_straights, key=lambda ps: self._calculate_cards_total_value(ps))
+            return best_ps
+        return None
+    
+    def _try_play_triple_straight(self, hand: List[Card]) -> Optional[List[Card]]:
+        """尝试出钢板（最小的）"""
+        triple_straights = self._find_triple_straights_cards(hand)
+        if triple_straights:
+            # 选择最小的钢板
+            best_ts = min(triple_straights, key=lambda ts: self._calculate_cards_total_value(ts))
+            return best_ts
+        return None
+    
+    def _try_play_fullhouse(self, hand: List[Card]) -> Optional[List[Card]]:
+        """尝试出三带二（最小的）"""
+        fullhouses = self._find_fullhouses_cards(hand)
+        if fullhouses:
+            # 选择最小的三带二
+            best_fh = min(fullhouses, key=lambda fh: self._calculate_cards_total_value(fh))
+            return best_fh
+        return None
+    
+    def _try_play_triple(self, hand: List[Card]) -> Optional[List[Card]]:
+        """尝试出三张（最小的）"""
+        value_groups = self._group_by_value(hand)
+        triples = []
+        for value, cards in value_groups.items():
+            if len(cards) >= 3 and len(cards) < 4:  # 不是炸弹
+                triples.append((value, cards[:3]))
+        
+        if triples:
+            # 选择最小的三张
+            triples.sort(key=lambda t: t[0])
+            return triples[0][1]
+        return None
+    
+    def _try_play_pair(self, hand: List[Card]) -> Optional[List[Card]]:
+        """尝试出对子（最小的）"""
+        value_groups = self._group_by_value(hand)
+        pairs = []
+        for value, cards in value_groups.items():
+            if len(cards) >= 2 and len(cards) < 4:  # 不是炸弹
+                pairs.append((value, cards[:2]))
+        
+        if pairs:
+            # 选择最小的对子
+            pairs.sort(key=lambda p: p[0])
+            return pairs[0][1]
+        return None
+    
+    def _play_smallest_isolated_single(self, hand: List[Card]) -> List[Card]:
+        """
+        出最小的孤立单牌
+        孤立牌定义：该点数的牌数量<=阈值（默认2）
+        """
+        value_groups = self._group_by_value(hand)
+        threshold = self.config["thresholds"]["isolated_card_threshold"]
+        
+        # 找出所有孤立牌
+        isolated_cards = []
+        for value, cards in value_groups.items():
+            if len(cards) <= threshold:
+                isolated_cards.extend(cards)
+        
+        if isolated_cards:
+            # 返回最小的孤立牌
+            sorted_isolated = sorted(isolated_cards, key=lambda c: c.get_value(self.level))
+            return [sorted_isolated[0]]
+        
+        # 如果没有孤立牌，返回最小的单牌
+        return self._play_smallest_single(hand)
+    
+    def _calculate_cards_total_value(self, cards: List[Card]) -> int:
+        """计算一组牌的总价值（用于比较大小）"""
+        return sum(c.get_value(self.level) for c in cards)
+    
+    # ==================== 方案A新增功能：手牌质量评估 ====================
+    
+    def _evaluate_hand_quality(self, hand: List[Card]) -> float:
+        """
+        评估手牌质量（0-100分）
+        
+        评分维度：
+        1. 牌型完整度（40分）- 完整牌型越多越好
+        2. 孤立牌惩罚（-30分）- 孤立牌越多扣分越多
+        3. 炸弹奖励（20分）- 炸弹越多加分越多
+        4. 出牌步数（40分）- 预计步数越少分数越高
+        """
+        if not hand:
+            return 100.0  # 没牌了，完美！
+        
+        weights = self.config["quality_weights"]
+        score = 0.0
+        
+        # 1. 牌型完整度（40分）
+        patterns = self._analyze_hand_patterns(hand)
+        complete_patterns = [p for p in patterns if p[0] not in ['PAIR', 'TRIPLE']]
+        completeness = len(complete_patterns) / max(1, len(hand) / 5)
+        score += min(weights["completeness"], completeness * weights["completeness"])
+        
+        # 2. 孤立牌惩罚
+        isolated_count = self._count_isolated_cards(hand)
+        score -= isolated_count * weights["isolated_penalty"]
+        
+        # 3. 炸弹奖励
+        bombs = [p for p in patterns if 'BOMB' in p[0]]
+        score += len(bombs) * weights["bomb_bonus"]
+        
+        # 4. 出牌步数评估
+        estimated_steps = self._estimate_steps_to_finish(hand)
+        steps_score = max(0, weights["completeness"] - estimated_steps * weights["steps_factor"])
+        score += steps_score
+        
+        return max(0.0, min(100.0, score))
+    
+    def _count_isolated_cards(self, hand: List[Card]) -> int:
+        """计算孤立牌数量（无法组成牌型的牌）"""
+        value_groups = self._group_by_value(hand)
+        threshold = self.config["thresholds"]["isolated_card_threshold"]
+        
+        isolated_count = 0
+        for value, cards in value_groups.items():
+            if len(cards) <= threshold:
+                isolated_count += len(cards)
+        
+        return isolated_count
+    
+    def _estimate_steps_to_finish(self, hand: List[Card]) -> int:
+        """
+        估算出完手牌需要的步数
+        简化算法：完整牌型算1步，剩余牌按平均3张/步计算
+        """
+        patterns = self._analyze_hand_patterns(hand)
+        
+        # 统计完整牌型覆盖的牌数
+        covered_cards = set()
+        for pattern_type, cards, cost in patterns:
+            if pattern_type not in ['PAIR', 'TRIPLE']:  # 只计算大牌型
+                covered_cards.update(cards)
+        
+        complete_pattern_steps = len([p for p in patterns if p[0] not in ['PAIR', 'TRIPLE']])
+        remaining_cards = len(hand) - len(covered_cards)
+        remaining_steps = (remaining_cards + 2) // 3  # 向上取整
+        
+        return complete_pattern_steps + remaining_steps
+    
+    # ==================== 方案A新增功能：改进的成本计算 ====================
+    
+    def _calculate_play_cost_improved(self, play: Pattern, hand: List[Card]) -> float:
+        """
+        改进的成本计算 - 考虑手牌平衡
+        
+        总成本 = 基础成本 + 破坏成本 + 手牌平衡成本 + 阶段成本
+        """
+        if not self.config["enable_hand_balance"]:
+            # 如果未启用手牌平衡，使用原始成本计算
+            return self._calculate_play_cost(play, hand)
+        
+        weights = self.config["cost_weights"]
+        
+        # 1. 基础成本
+        base_cost = self._get_base_cost(play)
+        
+        # 2. 破坏成本（原有逻辑）
+        break_cost = self._calculate_play_cost(play, hand)
+        
+        # 3. 手牌平衡成本（新增）
+        balance_cost = self._calculate_balance_cost(play, hand)
+        
+        # 4. 阶段成本（新增）
+        stage_cost = self._calculate_stage_cost(play, hand)
+        
+        total_cost = (
+            base_cost * weights["base"] +
+            break_cost * weights["break"] +
+            balance_cost * weights["balance"] +
+            stage_cost * weights["stage"]
+        )
+        
+        return total_cost
+    
+    def _get_base_cost(self, play: Pattern) -> float:
+        """获取牌型的基础成本"""
+        if is_bomb_type(play):
+            return 0.0  # 炸弹作为正常出牌，成本为0
+        
+        # 根据牌型大小设置基础成本
+        pattern_type = play.pattern_type
+        if pattern_type == PatternType.SINGLE:
+            return 5.0  # 单牌有一定成本，避免过度出单牌
+        elif pattern_type == PatternType.PAIR:
+            return 3.0
+        elif pattern_type == PatternType.TRIPLE:
+            return 2.0
+        else:
+            return 1.0  # 大牌型成本低，鼓励出大牌型
+    
+    def _calculate_balance_cost(self, play: Pattern, hand: List[Card]) -> float:
+        """
+        计算手牌平衡成本
+        评估出牌后手牌质量的变化
+        """
+        # 计算出牌前的手牌质量
+        before_quality = self._evaluate_hand_quality(hand)
+        
+        # 模拟出牌后的手牌
+        remaining = hand.copy()
+        for card in play.cards:
+            if card in remaining:
+                remaining.remove(card)
+        
+        # 计算出牌后的手牌质量
+        after_quality = self._evaluate_hand_quality(remaining)
+        
+        # 质量下降越多，成本越高
+        quality_loss = max(0, before_quality - after_quality)
+        
+        return quality_loss * 2  # 放大系数
+    
+    def _calculate_stage_cost(self, play: Pattern, hand: List[Card]) -> float:
+        """
+        计算阶段成本
+        根据游戏阶段（手牌数量）动态调整成本
+        """
+        hand_size = len(hand)
+        
+        # 开局阶段（手牌多）：鼓励出大牌型
+        if hand_size > 15:
+            if play.pattern_type in [PatternType.STRAIGHT, PatternType.PAIR_STRAIGHT, 
+                                     PatternType.TRIPLE_STRAIGHT]:
+                return -5.0  # 负成本=奖励
+            elif play.pattern_type == PatternType.SINGLE:
+                return 10.0  # 惩罚出单牌
+        
+        # 中局阶段（手牌中等）：平衡策略
+        elif hand_size > 8:
+            if play.pattern_type == PatternType.SINGLE:
+                return 5.0
+        
+        # 残局阶段（手牌少）：快速出完
+        else:
+            return 0.0  # 残局不考虑阶段成本
+        
+        return 0.0
